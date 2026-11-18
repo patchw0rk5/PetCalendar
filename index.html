@@ -31,6 +31,7 @@
     padding: 14px;
     margin-bottom: 16px;
   }
+  .hidden { display: none !important; }
 
   /* Add-event form */
   form { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
@@ -70,7 +71,7 @@
     margin-top: 2px;
     padding: 1px 4px;
     border-radius: 4px;
-    font-size: 0.68rem;
+    font-size: 0.7rem;
     color: #fff;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -98,7 +99,7 @@
 
   @media (max-width: 520px) {
     .cell { min-height: 58px; }
-    .chip { font-size: 0.6rem; }
+    .chip { font-size: 0.62rem; }
   }
 </style>
 </head>
@@ -109,8 +110,11 @@
   <section class="card">
     <h2>Add an event</h2>
     <form id="eventForm">
-      <label>Pet's name
-        <input id="pet" required maxlength="30" placeholder="e.g. Mochi">
+      <label>Pet
+        <select id="petSelect"></select>
+      </label>
+      <label id="newPetLabel">New pet's name
+        <input id="newPet" maxlength="30" placeholder="e.g. Mochi">
       </label>
       <label>Event type
         <select id="type"></select>
@@ -123,7 +127,7 @@
       </label>
       <button class="primary" type="submit">Add event</button>
     </form>
-    <p class="hint">Birthdays and adoption days repeat every year automatically. Tap a day in the calendar to fill in its date.</p>
+    <p class="hint">Type a pet's name once and it will be in the dropdown next time. Birthdays and adoption days repeat every year automatically. Tap a day in the calendar to fill in its date.</p>
   </section>
 
   <section class="card">
@@ -147,23 +151,26 @@
 </main>
 
 <script>
-  // 1. The kinds of events, with their colours.
+  // 1. The kinds of events, with their icons and colours.
   //    "yearly: true" means the event repeats every year on the same date.
+  //    To add a new type, copy a line and change the name, icon and colour.
   const TYPES = {
-    birthday:    { label: "Birthday",     color: "#d6336c", yearly: true },
-    adoption:    { label: "Adoption day", color: "#7048e8", yearly: true },
-    vet:         { label: "Vet visit",    color: "#1c7ed6", yearly: false },
-    vaccination: { label: "Vaccination",  color: "#2f9e44", yearly: false },
-    medication:  { label: "Medication",   color: "#e8590c", yearly: false },
-    grooming:    { label: "Grooming",     color: "#0c8599", yearly: false }
+    birthday:    { label: "Birthday",     icon: "🎂", color: "#d6336c", yearly: true },
+    adoption:    { label: "Adoption day", icon: "🏠", color: "#7048e8", yearly: true },
+    vet:         { label: "Vet visit",    icon: "🩺", color: "#1c7ed6", yearly: false },
+    vaccination: { label: "Vaccination",  icon: "💉", color: "#2f9e44", yearly: false },
+    medication:  { label: "Medication",   icon: "💊", color: "#e8590c", yearly: false },
+    grooming:    { label: "Grooming",     icon: "✂️", color: "#0c8599", yearly: false }
   };
 
-  // 2. Saving and loading. Events live in your browser (localStorage).
-  const STORAGE_KEY = "petcalendar.events";
+  // 2. Saving and loading. Everything lives in your browser (localStorage).
+  const EVENTS_KEY = "petcalendar.events";
+  const PETS_KEY = "petcalendar.pets";
+  const NEW_PET = "__new__"; // the special "Add a new pet" choice in the dropdown
 
   function loadEvents() {
     try {
-      return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
+      return JSON.parse(localStorage.getItem(EVENTS_KEY)) || [];
     } catch (e) {
       return [];
     }
@@ -171,13 +178,42 @@
 
   function saveEvents() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(events));
+      localStorage.setItem(EVENTS_KEY, JSON.stringify(events));
     } catch (e) {
       alert("Couldn't save in this browser, so events will be lost when you close the page.");
     }
   }
 
+  // The list of pets = pets you've saved + any pet names already used in events.
+  // (This means events added before the dropdown existed still show up in it.)
+  function loadPets() {
+    let names = [];
+    try {
+      names = JSON.parse(localStorage.getItem(PETS_KEY)) || [];
+    } catch (e) {
+      names = [];
+    }
+    events.forEach(ev => names.push(ev.pet));
+
+    const seen = new Set();
+    return names.filter(name => {
+      const key = String(name).toLowerCase();
+      if (!name || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function savePets() {
+    try {
+      localStorage.setItem(PETS_KEY, JSON.stringify(pets));
+    } catch (e) {
+      // If this fails, pets are still remembered through their events.
+    }
+  }
+
   let events = loadEvents();
+  let pets = loadPets();
   let viewDate = new Date();
   viewDate.setDate(1); // always the 1st of the month being shown
 
@@ -187,6 +223,9 @@
   const monthList = document.getElementById("monthList");
   const typeSelect = document.getElementById("type");
   const dateInput = document.getElementById("date");
+  const petSelect = document.getElementById("petSelect");
+  const newPetLabel = document.getElementById("newPetLabel");
+  const newPetInput = document.getElementById("newPet");
 
   // 4. Dates are stored as text like "2026-11-18".
   function dateString(year, month, day) {
@@ -204,7 +243,39 @@
     return TYPES[ev.type].yearly && ev.date.slice(5) === ds.slice(5);
   }
 
-  // 5. Draw the calendar.
+  // 5. The pet dropdown.
+  function renderPetSelect(selected) {
+    petSelect.innerHTML = "";
+    pets.forEach(name => {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = name;
+      petSelect.appendChild(option);
+    });
+    const add = document.createElement("option");
+    add.value = NEW_PET;
+    add.textContent = "➕ Add a new pet…";
+    petSelect.appendChild(add);
+
+    // Pick the given pet, or the first pet, or "Add a new pet" if there are none yet
+    if (selected && pets.includes(selected)) {
+      petSelect.value = selected;
+    } else {
+      petSelect.value = pets.length > 0 ? pets[0] : NEW_PET;
+    }
+    updateNewPetField();
+  }
+
+  // Show the "New pet's name" box only when "Add a new pet" is chosen
+  function updateNewPetField() {
+    const adding = petSelect.value === NEW_PET;
+    newPetLabel.classList.toggle("hidden", !adding);
+    newPetInput.required = adding;
+  }
+
+  petSelect.addEventListener("change", updateNewPetField);
+
+  // 6. Draw the calendar.
   function render() {
     const year = viewDate.getFullYear();
     const month = viewDate.getMonth();
@@ -240,7 +311,8 @@
         const chip = document.createElement("span");
         chip.className = "chip";
         chip.style.background = type.color;
-        chip.textContent = ev.pet + " · " + type.label;
+        chip.textContent = type.icon + " " + ev.pet;
+        chip.title = ev.pet + " · " + type.label; // shows when you hover over it
         cell.appendChild(chip);
         monthEvents.push({ ev: ev, ds: ds });
       });
@@ -266,8 +338,8 @@
 
       const text = document.createElement("span");
       text.className = "text";
-      text.textContent = item.ds.slice(8) + " " + monthLabel.textContent.split(" ")[0] + " · " +
-                         item.ev.pet + " · " + type.label;
+      text.textContent = type.icon + " " + item.ds.slice(8) + " " + monthLabel.textContent.split(" ")[0] +
+                         " · " + item.ev.pet + " · " + type.label;
       if (item.ev.notes) {
         const notes = document.createElement("div");
         notes.className = "notes";
@@ -293,27 +365,44 @@
     render();
   }
 
-  // 6. Set up the form and legend.
+  // 7. Set up the event type dropdown and the legend.
   const legend = document.getElementById("legend");
   Object.keys(TYPES).forEach(key => {
     const option = document.createElement("option");
     option.value = key;
-    option.textContent = TYPES[key].label;
+    option.textContent = TYPES[key].icon + " " + TYPES[key].label;
     typeSelect.appendChild(option);
 
     const item = document.createElement("span");
     item.style.setProperty("--c", TYPES[key].color);
-    item.textContent = TYPES[key].label;
+    item.textContent = TYPES[key].icon + " " + TYPES[key].label;
     legend.appendChild(item);
   });
 
   dateInput.value = todayString();
+  renderPetSelect();
 
+  // 8. What happens when you press "Add event".
   document.getElementById("eventForm").addEventListener("submit", e => {
     e.preventDefault();
+
+    let pet = petSelect.value;
+    if (pet === NEW_PET) {
+      pet = newPetInput.value.trim();
+      if (!pet) return;
+      // If you've already saved a pet with this name (ignoring capitals), reuse it
+      const existing = pets.find(p => p.toLowerCase() === pet.toLowerCase());
+      if (existing) {
+        pet = existing;
+      } else {
+        pets.push(pet);
+        savePets();
+      }
+    }
+
     const ev = {
       id: Date.now(),
-      pet: document.getElementById("pet").value.trim(),
+      pet: pet,
       type: typeSelect.value,
       date: dateInput.value,
       notes: document.getElementById("notes").value.trim()
@@ -326,11 +415,13 @@
     viewDate = new Date(y, m - 1, 1);
     render();
 
-    document.getElementById("pet").value = "";
+    // Keep the same pet selected, ready for the next event
+    newPetInput.value = "";
     document.getElementById("notes").value = "";
+    renderPetSelect(pet);
   });
 
-  // 7. Month navigation.
+  // 9. Month navigation.
   document.getElementById("prev").addEventListener("click", () => {
     viewDate = new Date(viewDate.getFullYear(), viewDate.getMonth() - 1, 1);
     render();
